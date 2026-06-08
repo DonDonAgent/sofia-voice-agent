@@ -94,7 +94,7 @@ wss.on("connection", (clientWs, req) => {
       }
     } catch { log("xAI raw: " + str.slice(0, 100)); }
 
-    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(str);
   });
 
   // client → xAI
