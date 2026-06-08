@@ -38,6 +38,7 @@ wss.on("connection", (clientWs, req) => {
   );
 
   let sessionReadySent = false;
+  let clientChunks = 0, xaiAudioDeltas = 0;
 
   xaiWs.on("open", () => {
     console.log("xAI connected");
@@ -58,8 +59,15 @@ wss.on("connection", (clientWs, req) => {
   xaiWs.on("message", (data) => {
     const str = data.toString();
     try {
-      const t = JSON.parse(str).type;
-      if (t !== "ping") console.log("xAI type:", t, str.slice(0, 120));
+      const msg = JSON.parse(str);
+      const t = msg.type;
+      if (t === "response.output_audio.delta") {
+        xaiAudioDeltas++;
+        console.log(`xAI audio delta #${xaiAudioDeltas}, len=${msg.delta?.length}`);
+      } else if (t !== "ping") {
+        console.log("xAI type:", t, str.slice(0, 120));
+        if (t === "error") console.log("xAI ERROR FULL:", str);
+      }
     } catch { console.log("xAI raw:", str.slice(0, 120)); }
 
     // Сигналим клиенту только когда xAI реально принял сессию
@@ -80,6 +88,14 @@ wss.on("connection", (clientWs, req) => {
 
   // client → xAI
   clientWs.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "input_audio_buffer.append") {
+        clientChunks++;
+        if (clientChunks % 20 === 0)
+          console.log(`client audio chunks: ${clientChunks}, xAI deltas: ${xaiAudioDeltas}`);
+      }
+    } catch {}
     if (xaiWs.readyState === WebSocket.OPEN) xaiWs.send(data);
   });
 
