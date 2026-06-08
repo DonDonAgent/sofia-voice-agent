@@ -84,7 +84,7 @@ wss.on("connection", (clientWs, req) => {
       }
 
       // Сигналим клиенту только когда xAI реально принял сессию
-      if (!sessionReadySent && (t === "session.updated" || t === "session.created")) {
+      if (!sessionReadySent && t === "session.updated") {
         sessionReadySent = true;
         log("session ready → notifying client");
         if (clientWs.readyState === WebSocket.OPEN)
