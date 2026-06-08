@@ -187,8 +187,15 @@ async function startCall() {
       scriptProc.onaudioprocess = (ev) => {
         if (ws?.readyState !== 1) return;
         sentChunks++;
-        if (sentChunks % 20 === 0) dbg("mic→srv: " + sentChunks + " | xai audio: " + gotDeltas);
         const input = ev.inputBuffer.getChannelData(0);
+
+        // Вычисляем RMS — если ~0, микрофон молчит
+        if (sentChunks % 20 === 0) {
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+          const rms = Math.sqrt(sum / input.length);
+          dbg("mic: " + sentChunks + " rms:" + rms.toFixed(4) + " xai:" + gotDeltas);
+        }
 
         // Ресемплинг nearest-neighbor если нужно
         let samples = input;
