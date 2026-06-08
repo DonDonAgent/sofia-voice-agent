@@ -77,8 +77,15 @@ const wave = document.getElementById("wave");
 let ws = null, audioCtx = null, scriptProc = null, stream = null;
 let timerInterval = null, seconds = 0;
 let nextPlayTime = 0;
+let sentChunks = 0, gotDeltas = 0;
+
+// Нижняя debug-строка
+const dbgEl = document.createElement("div");
+dbgEl.style.cssText = "position:fixed;bottom:4px;left:0;right:0;font-size:10px;opacity:0.6;text-align:center;padding:0 8px;word-break:break-all;";
+document.body.appendChild(dbgEl);
 
 function setStatus(text) { statusEl.textContent = text; }
+function dbg(text) { dbgEl.textContent = text; }
 
 function formatTime(s) {
   const m = Math.floor(s / 60);
@@ -98,9 +105,11 @@ function cleanup() {
   nextPlayTime = 0;
 }
 
-// Декодируем base64 PCM16 и ставим в очередь воспроизведения
 async function playPCM16(base64, ctx) {
-  if (ctx.state === "suspended") await ctx.resume();
+  dbg("play: ctx=" + ctx.state + " delta#" + gotDeltas + " len=" + base64.length);
+  if (ctx.state === "suspended") {
+    try { await ctx.resume(); } catch(e) { dbg("resume err: " + e.message); return; }
+  }
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -173,6 +182,8 @@ async function startCall() {
 
       scriptProc.onaudioprocess = (ev) => {
         if (ws?.readyState !== 1) return;
+        sentChunks++;
+        if (sentChunks % 20 === 0) dbg("mic→srv: " + sentChunks + " | xai audio: " + gotDeltas);
         const input = ev.inputBuffer.getChannelData(0);
 
         // Ресемплинг nearest-neighbor если нужно
@@ -207,6 +218,7 @@ async function startCall() {
       btn.classList.add("end");
       btn.disabled = false;
       setStatus("sr:" + audioCtx.sampleRate + " | Говорите…");
+      dbg("ready. ctx=" + audioCtx.state);
       wave.classList.remove("hidden");
       seconds = 0;
       timerInterval = setInterval(() => {
@@ -215,6 +227,8 @@ async function startCall() {
       }, 1000);
 
     } else if (msg.type === "response.output_audio.delta" && msg.delta) {
+      gotDeltas++;
+      dbg("xAI audio delta #" + gotDeltas + " | ctx=" + (audioCtx?.state));
       playPCM16(msg.delta, audioCtx);
       btn.classList.add("ringing");
 
