@@ -57,7 +57,10 @@ wss.on("connection", (clientWs, req) => {
   // xAI → client
   xaiWs.on("message", (data) => {
     const str = data.toString();
-    console.log("xAI msg:", str.slice(0, 160));
+    try {
+      const t = JSON.parse(str).type;
+      if (t !== "ping") console.log("xAI type:", t, str.slice(0, 120));
+    } catch { console.log("xAI raw:", str.slice(0, 120)); }
 
     // Сигналим клиенту только когда xAI реально принял сессию
     if (!sessionReadySent) {
