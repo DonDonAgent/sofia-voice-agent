@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Sofía — Голосовой звонок</title>
+<!-- SRI omitted: Telegram updates this SDK frequently; static hash would break on SDK updates -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--tg-theme-bg-color, #1a1a2e);
+    color: var(--tg-theme-text-color, #f0f0f0);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 100vh; gap: 20px; padding: 32px 24px;
+    user-select: none;
+  }
+  .avatar {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: linear-gradient(135deg, #4CAF50, #c0392b);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 44px; flex-shrink: 0;
+  }
+  h1 { font-size: 24px; font-weight: 700; }
+  .subtitle { font-size: 13px; opacity: 0.55; }
+  #timer { font-size: 22px; font-weight: 500; letter-spacing: 2px; min-height: 28px; }
+  #status { font-size: 13px; opacity: 0.6; min-height: 18px; text-align: center; }
+  .wave { display: flex; gap: 3px; align-items: center; height: 28px; }
+  .bar { width: 4px; border-radius: 2px; background: #4CAF50; animation: wave 0.8s ease-in-out infinite; }
+  .bar:nth-child(2) { animation-delay: 0.12s; }
+  .bar:nth-child(3) { animation-delay: 0.24s; }
+  .bar:nth-child(4) { animation-delay: 0.36s; }
+  .bar:nth-child(5) { animation-delay: 0.48s; }
+  @keyframes wave { 0%,100% { height: 6px; } 50% { height: 24px; } }
+  .wave.hidden { visibility: hidden; }
+  #callBtn {
+    width: 80px; height: 80px; border-radius: 50%; border: none;
+    background: #4CAF50; color: #fff; font-size: 32px;
+    cursor: pointer; transition: background 0.25s, box-shadow 0.25s;
+    box-shadow: 0 4px 20px rgba(76,175,80,0.45);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #callBtn:active { transform: scale(0.95); }
+  #callBtn.ringing { animation: ring 1.5s ease-in-out infinite; }
+  #callBtn.end { background: #e74c3c; box-shadow: 0 4px 20px rgba(231,76,60,0.45); }
+  @keyframes ring { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+</style>
+</head>
+<body>
+<div class="avatar">🌸</div>
+<h1>Sofía</h1>
+<p class="subtitle">Project Manager DonDonBerry</p>
+<div id="timer"></div>
+<div class="wave hidden" id="wave">
+  <div class="bar"></div><div class="bar"></div>
+  <div class="bar"></div><div class="bar"></div>
+  <div class="bar"></div>
+</div>
+<button id="callBtn">📞</button>
+<div id="status">Нажми чтобы позвонить</div>
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const btn = document.getElementById("callBtn");
+const statusEl = document.getElementById("status");
+const timerEl = document.getElementById("timer");
+const wave = document.getElementById("wave");
+let ws = null, audioCtx = null, workletNode = null, stream = null;
+let timerInterval = null, seconds = 0, nextPlayTime = 0;
+const WORKLET_CODE = `
+class PCMCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (!ch) return true;
+    const out = new Int16Array(ch.length);
+    for (let i = 0; i < ch.length; i++) {
+      out[i] = Math.max(-32768, Math.min(32767, ch[i] * 32768));
+    }
+    this.port.postMessage(out.buffer, [out.buffer]);
+    return true;
+  }
+}
+registerProcessor("pcm-capture", PCMCaptureProcessor);
+`;
+function setStatus(text) { statusEl.textContent = text; }
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  return String(m).padStart(2,"0") + ":" + String(s % 60).padStart(2,"0");
+}
+function cleanup() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  if (workletNode) { workletNode.disconnect(); workletNode = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  if (ws && ws.readyState < 2) { ws.close(); ws = null; }
+  btn.textContent = "📞"; btn.className = "";
+  wave.classList.add("hidden"); timerEl.textContent = ""; nextPlayTime = 0;
+}
+function playPCM16(base64, ctx) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const samples = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
+  const buffer = ctx.createBuffer(1, float32.length, 24000);
+  buffer.getChannelData(0).set(float32);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer; source.connect(ctx.destination);
+  const startAt = Math.max(ctx.currentTime, nextPlayTime);
+  source.start(startAt); nextPlayTime = startAt + buffer.duration;
+}
+async function startCall() {
+  btn.disabled = true; setStatus("Соединяю…");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch { setStatus("Нет доступа к микрофону"); btn.disabled = false; return; }
+  audioCtx = new AudioContext({ sampleRate: 24000 });
+  const wsUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => setStatus("Ожидание Sofíи…");
+  ws.onerror = () => { setStatus("Ошибка соединения"); cleanup(); btn.disabled = false; };
+  ws.onclose = () => { if (timerInterval) setStatus("Звонок завершён · " + formatTime(seconds)); cleanup(); btn.disabled = false; };
+  ws.onmessage = async (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === "session.ready") {
+      const blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      await audioCtx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+      const source = audioCtx.createMediaStreamSource(stream);
+      workletNode = new AudioWorkletNode(audioCtx, "pcm-capture");
+      source.connect(workletNode);
+      workletNode.port.onmessage = (ev) => {
+        if (ws?.readyState !== 1) return;
+        const pcm = new Uint8Array(ev.data);
+        let bin = "";
+        for (let i = 0; i < pcm.length; i++) bin += String.fromCharCode(pcm[i]);
+        ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
+      };
+      btn.textContent = "📵"; btn.classList.add("end"); btn.disabled = false;
+      setStatus("Говорите…"); wave.classList.remove("hidden");
+      seconds = 0;
+      timerInterval = setInterval(() => { seconds++; timerEl.textContent = formatTime(seconds); }, 1000);
+    } else if (msg.type === "response.audio.delta" && msg.delta) {
+      playPCM16(msg.delta, audioCtx); btn.classList.add("ringing");
+    } else if (msg.type === "response.audio.done") {
+      btn.classList.remove("ringing");
+    } else if (msg.type === "error") {
+      setStatus("Ошибка: " + (msg.error?.message || msg.error || "unknown"));
+    }
+  };
+}
+btn.addEventListener("click", () => {
+  if (ws) { setStatus("Звонок завершён · " + formatTime(seconds)); cleanup(); }
+  else startCall();
+});
+</script>
+</body>
+</html>
