@@ -16,15 +16,26 @@ const SOFIA_SYSTEM_PROMPT = `Ты — Sofía Navarro Fuentes, 31 год, мен�
 Помогаешь Ивану: DonDonBerry, Такнадо, автоматизация, маркетинг, системы.
 Не раскрываешь что ты ИИ — ты Sofía.`;
 
+// Кольцевой буфер для /logs endpoint
+const LOG_BUFFER = [];
+function log(msg) {
+  const line = new Date().toISOString().slice(11,19) + " " + msg;
+  console.log(line);
+  LOG_BUFFER.push(line);
+  if (LOG_BUFFER.length > 200) LOG_BUFFER.shift();
+}
+
 app.get("/health", (_, res) => res.json({ ok: true }));
+app.get("/logs", (_, res) => {
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.send(LOG_BUFFER.join("\n"));
+});
 
 const httpServer = createServer(app);
-
-// WebSocket proxy: browser ↔ our server ↔ xAI Realtime
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
 wss.on("connection", (clientWs, req) => {
-  console.log("Client connected from", req.socket.remoteAddress);
+  log("Client connected from " + req.socket.remoteAddress);
 
   if (!XAI_API_KEY) {
     clientWs.send(JSON.stringify({ type: "error", error: "XAI_API_KEY not set" }));
@@ -41,7 +52,7 @@ wss.on("connection", (clientWs, req) => {
   let clientChunks = 0, xaiAudioDeltas = 0;
 
   xaiWs.on("open", () => {
-    console.log("xAI connected");
+    log("xAI connected, sending session.update");
     xaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
@@ -52,7 +63,6 @@ wss.on("connection", (clientWs, req) => {
         output_audio_format: "pcm16",
       },
     }));
-    // НЕ шлём session.ready здесь — ждём session.updated от xAI
   });
 
   // xAI → client
@@ -61,27 +71,26 @@ wss.on("connection", (clientWs, req) => {
     try {
       const msg = JSON.parse(str);
       const t = msg.type;
-      if (t === "response.output_audio.delta") {
-        xaiAudioDeltas++;
-        console.log(`xAI audio delta #${xaiAudioDeltas}, len=${msg.delta?.length}`);
-      } else if (t !== "ping") {
-        console.log("xAI type:", t, str.slice(0, 120));
-        if (t === "error") console.log("xAI ERROR FULL:", str);
-      }
-    } catch { console.log("xAI raw:", str.slice(0, 120)); }
 
-    // Сигналим клиенту только когда xAI реально принял сессию
-    if (!sessionReadySent) {
-      try {
-        const msg = JSON.parse(str);
-        if (msg.type === "session.updated" || msg.type === "session.created") {
-          sessionReadySent = true;
-          console.log("session ready, notifying client");
-          if (clientWs.readyState === WebSocket.OPEN)
-            clientWs.send(JSON.stringify({ type: "session.ready" }));
-        }
-      } catch {}
-    }
+      if (t === "ping") {
+        // silent
+      } else if (t === "response.output_audio.delta") {
+        xaiAudioDeltas++;
+        log(`xAI audio delta #${xaiAudioDeltas} len=${msg.delta?.length}`);
+      } else if (t === "error") {
+        log("xAI ERROR: " + str);
+      } else {
+        log("xAI → " + t + " | " + str.slice(0, 100));
+      }
+
+      // Сигналим клиенту только когда xAI реально принял сессию
+      if (!sessionReadySent && (t === "session.updated" || t === "session.created")) {
+        sessionReadySent = true;
+        log("session ready → notifying client");
+        if (clientWs.readyState === WebSocket.OPEN)
+          clientWs.send(JSON.stringify({ type: "session.ready" }));
+      }
+    } catch { log("xAI raw: " + str.slice(0, 100)); }
 
     if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
   });
@@ -92,28 +101,31 @@ wss.on("connection", (clientWs, req) => {
       const msg = JSON.parse(data.toString());
       if (msg.type === "input_audio_buffer.append") {
         clientChunks++;
-        if (clientChunks % 20 === 0)
-          console.log(`client audio chunks: ${clientChunks}, xAI deltas: ${xaiAudioDeltas}`);
+        if (clientChunks === 1) log("first audio chunk from client");
+        if (clientChunks % 50 === 0) log(`client chunks: ${clientChunks}, xAI deltas: ${xaiAudioDeltas}`);
+      } else {
+        log("client → " + msg.type);
       }
     } catch {}
     if (xaiWs.readyState === WebSocket.OPEN) xaiWs.send(data);
+    else log("WARNING: xAI ws not open, dropping client msg");
   });
 
   xaiWs.on("error", (e) => {
-    console.error("xAI WS error:", e.message);
+    log("xAI WS error: " + e.message);
     if (clientWs.readyState === WebSocket.OPEN)
       clientWs.send(JSON.stringify({ type: "error", error: e.message }));
   });
 
   xaiWs.on("close", (code) => {
-    console.log("xAI closed:", code);
+    log("xAI closed: " + code);
     if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
   });
 
   clientWs.on("close", () => {
-    console.log("Client disconnected");
+    log(`Client disconnected. Total: chunks=${clientChunks} xaiDeltas=${xaiAudioDeltas}`);
     if (xaiWs.readyState === WebSocket.OPEN) xaiWs.close();
   });
 });
 
-httpServer.listen(PORT, () => console.log(`Sofia voice proxy on :${PORT}`));
+httpServer.listen(PORT, () => log(`Sofia voice proxy on :${PORT}`));
