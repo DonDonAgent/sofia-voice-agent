@@ -197,7 +197,11 @@ async function startCall() {
       source.connect(scriptProc);
       scriptProc.connect(audioCtx.destination);
 
-      // server_vad сам триггерит ответ по детекции речи — response.create не нужен
+      // response.create для первого приветствия; далее VAD сам триггерит ответы
+      setTimeout(() => {
+        if (ws?.readyState === 1)
+          ws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio', 'text'] } }));
+      }, 500);
 
       btn.textContent = "📵";
       btn.classList.add("end");
