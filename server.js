@@ -46,13 +46,14 @@ wss.on("connection", (clientWs, req) => {
         turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 600 },
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
-        input_audio_transcription: { model: "whisper-1" },
       },
     }));
     clientWs.send(JSON.stringify({ type: "session.ready" }));
   });
 
   xaiWs.on("message", (data) => {
+    const str = data.toString();
+    console.log("xAI msg:", str.slice(0, 120));
     if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
   });
 
@@ -66,8 +67,8 @@ wss.on("connection", (clientWs, req) => {
       clientWs.send(JSON.stringify({ type: "error", error: e.message }));
   });
 
-  xaiWs.on("close", (code) => {
-    console.log("xAI closed:", code);
+  xaiWs.on("close", (code, reason) => {
+    console.log("xAI closed:", code, reason.toString());
     if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
   });
 
