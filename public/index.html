@@ -205,14 +205,14 @@ async function startCall() {
         ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
       };
 
+      // response.create ПЕРВЫМ — до аудио в буфере, иначе VAD конфликтует
+      ws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio', 'text'] } }));
+
+      // Небольшая пауза, потом запускаем микрофон
+      await new Promise(r => setTimeout(r, 300));
+
       source.connect(scriptProc);
       scriptProc.connect(audioCtx.destination);
-
-      // response.create для первого приветствия; далее VAD сам триггерит ответы
-      setTimeout(() => {
-        if (ws?.readyState === 1)
-          ws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio', 'text'] } }));
-      }, 500);
 
       btn.textContent = "📵";
       btn.classList.add("end");
