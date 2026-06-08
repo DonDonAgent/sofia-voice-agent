@@ -142,9 +142,7 @@ async function startCall() {
     return;
   }
 
-  audioCtx = new AudioContext({ sampleRate: 24000 });
-  // iOS требует resume() строго в user gesture (обработчик клика)
-  try { await audioCtx.resume(); } catch(e) { dbg("ctx resume err: " + e.message); }
+  // audioCtx уже создан и разблокирован в обработчике клика
 
   // Подключаемся к нашему серверу (WebSocket proxy → xAI)
   const wsUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
@@ -261,9 +259,20 @@ btn.addEventListener("click", () => {
   if (ws) {
     setStatus("Звонок завершён · " + formatTime(seconds));
     cleanup();
-  } else {
-    startCall();
+    return;
   }
+
+  // iOS требует AudioContext разблокировки синхронно в user gesture
+  // (до любого await — иначе WebKit блокирует воспроизведение)
+  audioCtx = new AudioContext({ sampleRate: 24000 });
+  const silentBuf = audioCtx.createBuffer(1, 1, 24000);
+  const unlock = audioCtx.createBufferSource();
+  unlock.buffer = silentBuf;
+  unlock.connect(audioCtx.destination);
+  unlock.start(0);
+  dbg("ctx unlocked: " + audioCtx.state);
+
+  startCall();
 });
 </script>
 </body>
