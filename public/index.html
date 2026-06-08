@@ -143,6 +143,8 @@ async function startCall() {
   }
 
   audioCtx = new AudioContext({ sampleRate: 24000 });
+  // iOS требует resume() строго в user gesture (обработчик клика)
+  try { await audioCtx.resume(); } catch(e) { dbg("ctx resume err: " + e.message); }
 
   // Подключаемся к нашему серверу (WebSocket proxy → xAI)
   const wsUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
