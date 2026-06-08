@@ -20,6 +20,7 @@ app.get("/health", (_, res) => res.json({ ok: true }));
 
 const httpServer = createServer(app);
 
+// WebSocket proxy: browser ↔ our server ↔ xAI Realtime
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
 wss.on("connection", (clientWs, req) => {
@@ -36,6 +37,8 @@ wss.on("connection", (clientWs, req) => {
     { headers: { Authorization: `Bearer ${XAI_API_KEY}` } }
   );
 
+  let sessionReadySent = false;
+
   xaiWs.on("open", () => {
     console.log("xAI connected");
     xaiWs.send(JSON.stringify({
@@ -48,15 +51,31 @@ wss.on("connection", (clientWs, req) => {
         output_audio_format: "pcm16",
       },
     }));
-    clientWs.send(JSON.stringify({ type: "session.ready" }));
+    // НЕ шлём session.ready здесь — ждём session.updated от xAI
   });
 
+  // xAI → client
   xaiWs.on("message", (data) => {
     const str = data.toString();
-    console.log("xAI msg:", str.slice(0, 120));
+    console.log("xAI msg:", str.slice(0, 160));
+
+    // Сигналим клиенту только когда xAI реально принял сессию
+    if (!sessionReadySent) {
+      try {
+        const msg = JSON.parse(str);
+        if (msg.type === "session.updated" || msg.type === "session.created") {
+          sessionReadySent = true;
+          console.log("session ready, notifying client");
+          if (clientWs.readyState === WebSocket.OPEN)
+            clientWs.send(JSON.stringify({ type: "session.ready" }));
+        }
+      } catch {}
+    }
+
     if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
   });
 
+  // client → xAI
   clientWs.on("message", (data) => {
     if (xaiWs.readyState === WebSocket.OPEN) xaiWs.send(data);
   });
@@ -67,8 +86,8 @@ wss.on("connection", (clientWs, req) => {
       clientWs.send(JSON.stringify({ type: "error", error: e.message }));
   });
 
-  xaiWs.on("close", (code, reason) => {
-    console.log("xAI closed:", code, reason.toString());
+  xaiWs.on("close", (code) => {
+    console.log("xAI closed:", code);
     if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
   });
 
