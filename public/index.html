@@ -228,14 +228,28 @@ async function startCall() {
 
     } else if (msg.type === "response.output_audio.delta" && msg.delta) {
       gotDeltas++;
-      dbg("xAI audio delta #" + gotDeltas + " | ctx=" + (audioCtx?.state));
+      dbg("AUDIO DELTA #" + gotDeltas + " ctx=" + (audioCtx?.state));
       playPCM16(msg.delta, audioCtx);
       btn.classList.add("ringing");
 
     } else if (msg.type === "response.output_audio.done") {
       btn.classList.remove("ringing");
+      dbg("audio.done");
+
+    } else if (msg.type === "response.created") {
+      dbg("response.created → waiting audio...");
+
+    } else if (msg.type === "response.done") {
+      dbg("response.done (no audio?)");
+
+    } else if (msg.type === "input_audio_buffer.speech_started") {
+      dbg("VAD: speech detected!");
+
+    } else if (msg.type === "input_audio_buffer.speech_stopped") {
+      dbg("VAD: speech stopped, generating...");
 
     } else if (msg.type === "error") {
+      dbg("ERROR: " + JSON.stringify(msg.error || msg));
       setStatus("Ошибка: " + (msg.error?.message || msg.error || "unknown"));
     }
   };
