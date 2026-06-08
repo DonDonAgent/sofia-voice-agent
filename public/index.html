@@ -167,12 +167,27 @@ async function startCall() {
       const source = audioCtx.createMediaStreamSource(stream);
       scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
 
+      // xAI требует 24000 Hz; iOS может создать ctx с другим sampleRate
+      const XAISRATE = 24000;
+      const ratio = audioCtx.sampleRate / XAISRATE;
+
       scriptProc.onaudioprocess = (ev) => {
         if (ws?.readyState !== 1) return;
         const input = ev.inputBuffer.getChannelData(0);
-        const pcm16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++)
-          pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
+
+        // Ресемплинг nearest-neighbor если нужно
+        let samples = input;
+        if (ratio !== 1) {
+          const outLen = Math.round(input.length / ratio);
+          const resampled = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++)
+            resampled[i] = input[Math.min(Math.round(i * ratio), input.length - 1)];
+          samples = resampled;
+        }
+
+        const pcm16 = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i++)
+          pcm16[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
         const bytes = new Uint8Array(pcm16.buffer);
         let bin = "";
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
@@ -195,7 +210,7 @@ async function startCall() {
       btn.textContent = "📵";
       btn.classList.add("end");
       btn.disabled = false;
-      setStatus("Говорите…");
+      setStatus("sr:" + audioCtx.sampleRate + " | Говорите…");
       wave.classList.remove("hidden");
       seconds = 0;
       timerInterval = setInterval(() => {
