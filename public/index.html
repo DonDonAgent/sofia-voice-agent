@@ -98,7 +98,8 @@ function cleanup() {
   btn.textContent = "📞"; btn.className = "";
   wave.classList.add("hidden"); timerEl.textContent = ""; nextPlayTime = 0;
 }
-function playPCM16(base64, ctx) {
+async function playPCM16(base64, ctx) {
+  if (ctx.state === "suspended") await ctx.resume();
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -141,6 +142,8 @@ async function startCall() {
         for (let i = 0; i < pcm.length; i++) bin += String.fromCharCode(pcm[i]);
         ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
       };
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
       btn.textContent = "📵"; btn.classList.add("end"); btn.disabled = false;
       setStatus("Говорите…"); wave.classList.remove("hidden");
       seconds = 0;
