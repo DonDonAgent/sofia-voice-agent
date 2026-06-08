@@ -78,6 +78,7 @@ let ws = null, audioCtx = null, scriptProc = null, stream = null;
 let timerInterval = null, seconds = 0;
 let nextPlayTime = 0;
 let sentChunks = 0, gotDeltas = 0;
+let sofiaReplying = false;
 
 // Нижняя debug-строка
 const dbgEl = document.createElement("div");
@@ -183,24 +184,20 @@ async function startCall() {
       const source = audioCtx.createMediaStreamSource(stream);
       scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
 
-      // xAI требует 24000 Hz; iOS может создать ctx с другим sampleRate
-      const XAISRATE = 24000;
-      const ratio = audioCtx.sampleRate / XAISRATE;
+      // Ручной VAD (turn_detection:none на сервере)
+      const VAD_SPEAK   = 0.015;   // RMS порог речи
+      const VAD_SIL_MS  = 800;     // ms тишины → конец фразы
+      const XAISRATE    = 24000;
+      const ratio       = audioCtx.sampleRate / XAISRATE;
+      let vadSpeaking = false, vadSilenceStart = 0;
+      sofiaReplying = true; // ждём первый ответ Sofia
 
       scriptProc.onaudioprocess = (ev) => {
         if (ws?.readyState !== 1) return;
         sentChunks++;
         const input = ev.inputBuffer.getChannelData(0);
 
-        // Вычисляем RMS — если ~0, микрофон молчит
-        if (sentChunks % 20 === 0) {
-          let sum = 0;
-          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-          const rms = Math.sqrt(sum / input.length);
-          dbg("mic: " + sentChunks + " rms:" + rms.toFixed(4) + " xai:" + gotDeltas);
-        }
-
-        // Ресемплинг nearest-neighbor если нужно
+        // Ресемплинг если sampleRate != 24000
         let samples = input;
         if (ratio !== 1) {
           const outLen = Math.round(input.length / ratio);
@@ -210,6 +207,30 @@ async function startCall() {
           samples = resampled;
         }
 
+        // RMS
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+        const rms = Math.sqrt(sum / samples.length);
+        if (sentChunks % 15 === 0)
+          dbg("rms:" + rms.toFixed(3) + " " + (vadSpeaking?"SPEAK":"sil") + (sofiaReplying?" sofia":""));
+
+        // VAD: не слушаем пока Sofia отвечает
+        if (!sofiaReplying) {
+          if (rms > VAD_SPEAK) {
+            if (!vadSpeaking) { vadSpeaking = true; setStatus("Слушаю…"); }
+            vadSilenceStart = 0;
+          } else if (vadSpeaking) {
+            if (!vadSilenceStart) vadSilenceStart = Date.now();
+            if (Date.now() - vadSilenceStart > VAD_SIL_MS) {
+              vadSpeaking = false; vadSilenceStart = 0; sofiaReplying = true;
+              setStatus("Sofía думает…");
+              ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+              ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
+            }
+          }
+        }
+
+        // Всегда пишем аудио в буфер xAI
         const pcm16 = new Int16Array(samples.length);
         for (let i = 0; i < samples.length; i++)
           pcm16[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
@@ -248,16 +269,14 @@ async function startCall() {
 
     } else if (msg.type === "response.output_audio.done") {
       btn.classList.remove("ringing");
-      dbg("audio.done → clearing buffer, listening...");
-      // Сбрасываем буфер чтобы VAD начал слушать с чистого листа
-      if (ws?.readyState === 1)
-        ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
 
     } else if (msg.type === "response.created") {
       dbg("response.created → waiting audio...");
 
     } else if (msg.type === "response.done") {
-      dbg("response.done (no audio?)");
+      sofiaReplying = false;
+      setStatus("Говорите…");
+      dbg("response.done → listening");
 
     } else if (msg.type === "input_audio_buffer.speech_started") {
       dbg("VAD: speech detected!");
