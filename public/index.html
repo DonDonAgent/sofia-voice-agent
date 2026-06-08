@@ -106,10 +106,12 @@ function cleanup() {
 }
 
 async function playPCM16(base64, ctx) {
-  dbg("play: ctx=" + ctx.state + " delta#" + gotDeltas + " len=" + base64.length);
-  if (ctx.state === "suspended") {
-    try { await ctx.resume(); } catch(e) { dbg("resume err: " + e.message); return; }
+  dbg("play#" + gotDeltas + " ctx=" + ctx.state + " len=" + base64.length);
+  if (ctx.state !== "running") {
+    try { await ctx.resume(); dbg("resumed→" + ctx.state); }
+    catch(e) { dbg("RESUME ERR: " + e.message); return; }
   }
+  try {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -128,6 +130,8 @@ async function playPCM16(base64, ctx) {
   const startAt = Math.max(now, nextPlayTime);
   source.start(startAt);
   nextPlayTime = startAt + buffer.duration;
+  dbg("started at " + startAt.toFixed(2) + " dur=" + buffer.duration.toFixed(2));
+  } catch(e) { dbg("PLAY ERR: " + e.message); }
 }
 
 async function startCall() {
@@ -262,15 +266,18 @@ btn.addEventListener("click", () => {
     return;
   }
 
-  // iOS требует AudioContext разблокировки синхронно в user gesture
-  // (до любого await — иначе WebKit блокирует воспроизведение)
+  // iOS: создаём AudioContext и разблокируем синхронно в gesture
   audioCtx = new AudioContext({ sampleRate: 24000 });
-  const silentBuf = audioCtx.createBuffer(1, 1, 24000);
-  const unlock = audioCtx.createBufferSource();
-  unlock.buffer = silentBuf;
-  unlock.connect(audioCtx.destination);
-  unlock.start(0);
-  dbg("ctx unlocked: " + audioCtx.state);
+
+  // Тихий oscillator держит граф активным — iOS не suspends AudioContext
+  const keepAliveGain = audioCtx.createGain();
+  keepAliveGain.gain.value = 0.00001;
+  const keepAliveOsc = audioCtx.createOscillator();
+  keepAliveOsc.connect(keepAliveGain);
+  keepAliveGain.connect(audioCtx.destination);
+  keepAliveOsc.start();
+
+  dbg("ctx: " + audioCtx.state + " sr:" + audioCtx.sampleRate);
 
   startCall();
 });
