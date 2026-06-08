@@ -58,7 +58,7 @@ wss.on("connection", (clientWs, req) => {
       session: {
         voice: "eve",
         instructions: SOFIA_SYSTEM_PROMPT,
-        turn_detection: { type: "server_vad", threshold: 0.2, silence_duration_ms: 500, prefix_padding_ms: 300 },
+        turn_detection: { type: "server_vad", threshold: 0.1, silence_duration_ms: 500, prefix_padding_ms: 300 },
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
       },
