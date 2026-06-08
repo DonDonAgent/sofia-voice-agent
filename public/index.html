@@ -197,15 +197,7 @@ async function startCall() {
       source.connect(scriptProc);
       scriptProc.connect(audioCtx.destination);
 
-      // Даём ScriptProcessor время начать отправку, потом просим Sofia заговорить
-      setTimeout(() => {
-        if (ws?.readyState === 1) {
-          ws.send(JSON.stringify({
-            type: "response.create",
-            response: { modalities: ["audio", "text"] }
-          }));
-        }
-      }, 500);
+      // server_vad сам триггерит ответ по детекции речи — response.create не нужен
 
       btn.textContent = "📵";
       btn.classList.add("end");
@@ -218,11 +210,11 @@ async function startCall() {
         timerEl.textContent = formatTime(seconds);
       }, 1000);
 
-    } else if (msg.type === "response.audio.delta" && msg.delta) {
+    } else if (msg.type === "response.output_audio.delta" && msg.delta) {
       playPCM16(msg.delta, audioCtx);
       btn.classList.add("ringing");
 
-    } else if (msg.type === "response.audio.done") {
+    } else if (msg.type === "response.output_audio.done") {
       btn.classList.remove("ringing");
 
     } else if (msg.type === "error") {
