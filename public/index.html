@@ -139,7 +139,10 @@ async function startCall() {
   setStatus("Соединяю…");
 
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false
+    });
   } catch {
     setStatus("Нет доступа к микрофону");
     btn.disabled = false;
@@ -245,7 +248,10 @@ async function startCall() {
 
     } else if (msg.type === "response.output_audio.done") {
       btn.classList.remove("ringing");
-      dbg("audio.done");
+      dbg("audio.done → clearing buffer, listening...");
+      // Сбрасываем буфер чтобы VAD начал слушать с чистого листа
+      if (ws?.readyState === 1)
+        ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
 
     } else if (msg.type === "response.created") {
       dbg("response.created → waiting audio...");
