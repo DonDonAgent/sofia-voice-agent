@@ -276,7 +276,15 @@ async function startCall() {
     } else if (msg.type === "response.done") {
       sofiaReplying = false;
       setStatus("Говорите…");
-      dbg("response.done → listening");
+      dbg("response.done → next in 2s");
+      // Тест цикла: через 2с просим следующий ответ без commit
+      setTimeout(() => {
+        if (ws?.readyState === 1 && !sofiaReplying) {
+          sofiaReplying = true;
+          ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
+          dbg("auto response.create sent");
+        }
+      }, 2000);
 
     } else if (msg.type === "input_audio_buffer.speech_started") {
       dbg("VAD: speech detected!");
