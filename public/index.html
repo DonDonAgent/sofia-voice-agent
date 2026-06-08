@@ -17,11 +17,17 @@
     min-height: 100vh; gap: 20px; padding: 32px 24px;
     user-select: none;
   }
-  .avatar { width: 96px; height: 96px; border-radius: 50%; background: linear-gradient(135deg, #4CAF50, #c0392b); display: flex; align-items: center; justify-content: center; font-size: 44px; }
+  .avatar {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: linear-gradient(135deg, #4CAF50, #c0392b);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 44px; flex-shrink: 0;
+  }
   h1 { font-size: 24px; font-weight: 700; }
   .subtitle { font-size: 13px; opacity: 0.55; }
   #timer { font-size: 22px; font-weight: 500; letter-spacing: 2px; min-height: 28px; }
-  #status { font-size: 12px; opacity: 0.6; min-height: 18px; text-align: center; max-width: 280px; }
+  #status { font-size: 13px; opacity: 0.6; min-height: 18px; text-align: center; }
+
   .wave { display: flex; gap: 3px; align-items: center; height: 28px; }
   .bar { width: 4px; border-radius: 2px; background: #4CAF50; animation: wave 0.8s ease-in-out infinite; }
   .bar:nth-child(2) { animation-delay: 0.12s; }
@@ -30,25 +36,34 @@
   .bar:nth-child(5) { animation-delay: 0.48s; }
   @keyframes wave { 0%,100% { height: 6px; } 50% { height: 24px; } }
   .wave.hidden { visibility: hidden; }
-  #callBtn { width: 80px; height: 80px; border-radius: 50%; border: none; background: #4CAF50; color: #fff; font-size: 32px; cursor: pointer; box-shadow: 0 4px 20px rgba(76,175,80,0.45); display: flex; align-items: center; justify-content: center; }
+
+  #callBtn {
+    width: 80px; height: 80px; border-radius: 50%; border: none;
+    background: #4CAF50; color: #fff; font-size: 32px;
+    cursor: pointer; transition: background 0.25s, box-shadow 0.25s;
+    box-shadow: 0 4px 20px rgba(76,175,80,0.45);
+    display: flex; align-items: center; justify-content: center;
+  }
   #callBtn:active { transform: scale(0.95); }
+  #callBtn.ringing { animation: ring 1.5s ease-in-out infinite; }
   #callBtn.end { background: #e74c3c; box-shadow: 0 4px 20px rgba(231,76,60,0.45); }
-  #callBtn.ringing { animation: ring 1.5s infinite; }
   @keyframes ring { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-  #debug { font-size: 10px; opacity: 0.35; text-align: center; max-width: 300px; word-break: break-all; }
 </style>
 </head>
 <body>
 <div class="avatar">🌸</div>
 <h1>Sofía</h1>
 <p class="subtitle">Project Manager DonDonBerry</p>
+
 <div id="timer"></div>
 <div class="wave hidden" id="wave">
-  <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+  <div class="bar"></div><div class="bar"></div>
+  <div class="bar"></div><div class="bar"></div>
+  <div class="bar"></div>
 </div>
+
 <button id="callBtn">📞</button>
 <div id="status">Нажми чтобы позвонить</div>
-<div id="debug"></div>
 
 <script>
 const tg = window.Telegram?.WebApp;
@@ -58,121 +73,135 @@ const btn = document.getElementById("callBtn");
 const statusEl = document.getElementById("status");
 const timerEl = document.getElementById("timer");
 const wave = document.getElementById("wave");
-const debugEl = document.getElementById("debug");
 
-let ws = null, audioCtx = null, processor = null, stream = null;
-let timerInterval = null, seconds = 0, nextPlayTime = 0;
-const eventLog = [];
+let ws = null, audioCtx = null, scriptProc = null, stream = null;
+let timerInterval = null, seconds = 0;
+let nextPlayTime = 0;
 
 function setStatus(text) { statusEl.textContent = text; }
-function dbg(text) {
-  eventLog.push(text);
-  if (eventLog.length > 5) eventLog.shift();
-  debugEl.textContent = eventLog.join(' | ');
-}
+
 function formatTime(s) {
-  return String(Math.floor(s/60)).padStart(2,"0") + ":" + String(s%60).padStart(2,"0");
+  const m = Math.floor(s / 60);
+  return String(m).padStart(2,"0") + ":" + String(s % 60).padStart(2,"0");
 }
 
 function cleanup() {
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-  if (processor) { processor.disconnect(); processor = null; }
+  if (scriptProc) { scriptProc.disconnect(); scriptProc = null; }
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-  if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
   if (ws && ws.readyState < 2) { ws.close(); ws = null; }
-  btn.textContent = "📞"; btn.className = "";
-  wave.classList.add("hidden"); timerEl.textContent = ""; nextPlayTime = 0;
+  btn.textContent = "📞";
+  btn.className = "";
+  wave.classList.add("hidden");
+  timerEl.textContent = "";
+  nextPlayTime = 0;
 }
 
+// Декодируем base64 PCM16 и ставим в очередь воспроизведения
 async function playPCM16(base64, ctx) {
-  try {
-    if (ctx.state === "suspended") await ctx.resume();
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const samples = new Int16Array(bytes.buffer);
-    const float32 = new Float32Array(samples.length);
-    for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
-    const buffer = ctx.createBuffer(1, float32.length, 24000);
-    buffer.getChannelData(0).set(float32);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer; source.connect(ctx.destination);
-    const startAt = Math.max(ctx.currentTime, nextPlayTime);
-    source.start(startAt); nextPlayTime = startAt + buffer.duration;
-  } catch(e) { dbg('play err:' + e.message); }
+  if (ctx.state === "suspended") await ctx.resume();
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const samples = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
+
+  const buffer = ctx.createBuffer(1, float32.length, 24000);
+  buffer.getChannelData(0).set(float32);
+
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+
+  const now = ctx.currentTime;
+  const startAt = Math.max(now, nextPlayTime);
+  source.start(startAt);
+  nextPlayTime = startAt + buffer.duration;
 }
 
 async function startCall() {
-  btn.disabled = true; setStatus("Соединяю…"); dbg('start');
+  btn.disabled = true;
+  setStatus("Соединяю…");
+
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    dbg('mic ok');
-  } catch(e) {
-    setStatus("Нет доступа к микрофону: " + e.message);
-    btn.disabled = false; return;
+  } catch {
+    setStatus("Нет доступа к микрофону");
+    btn.disabled = false;
+    return;
   }
 
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-    if (audioCtx.state === "suspended") await audioCtx.resume();
-    dbg('ctx:' + audioCtx.state);
-  } catch(e) {
-    setStatus("Ошибка AudioContext: " + e.message); btn.disabled = false; return;
-  }
+  audioCtx = new AudioContext({ sampleRate: 24000 });
 
+  // Подключаемся к нашему серверу (WebSocket proxy → xAI)
   const wsUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
-  dbg('ws connect');
   ws = new WebSocket(wsUrl);
   ws.binaryType = "arraybuffer";
 
-  ws.onopen = () => { setStatus("Ожидание Sofíи…"); dbg('ws open'); };
+  ws.onopen = () => setStatus("Ожидание Sofíи…");
 
-  ws.onerror = (e) => {
-    setStatus("Ошибка WS"); dbg('ws err'); cleanup(); btn.disabled = false;
+  ws.onerror = () => {
+    setStatus("Ошибка соединения");
+    cleanup();
+    btn.disabled = false;
   };
 
-  ws.onclose = (e) => {
-    dbg('ws close ' + e.code);
-    if (timerInterval) setStatus("Звонок завершён · " + formatTime(seconds));
-    cleanup(); btn.disabled = false;
+  ws.onclose = () => {
+    if (timerInterval) {
+      setStatus("Звонок завершён · " + formatTime(seconds));
+    }
+    cleanup();
+    btn.disabled = false;
   };
 
   ws.onmessage = async (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
-    dbg(msg.type);
 
     if (msg.type === "session.ready") {
-      try {
-        // ScriptProcessor — работает везде включая Telegram WebView
-        const source = audioCtx.createMediaStreamSource(stream);
-        processor = audioCtx.createScriptProcessor(4096, 1, 1);
-        source.connect(processor);
-        processor.connect(audioCtx.destination);
-        processor.onaudioprocess = (ev) => {
-          if (ws?.readyState !== 1) return;
-          const float32 = ev.inputBuffer.getChannelData(0);
-          const pcm16 = new Int16Array(float32.length);
-          for (let i = 0; i < float32.length; i++)
-            pcm16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
-          const bytes = new Uint8Array(pcm16.buffer);
-          let bin = "";
-          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-          ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
-        };
-        dbg('proc ok');
-      } catch(e) {
-        dbg('proc err:' + e.message);
-        setStatus("Ошибка аудио: " + e.message); return;
-      }
+      // ScriptProcessor — работает в Telegram WebView (AudioWorklet + Blob URL нестабилен)
+      if (audioCtx.state === "suspended") await audioCtx.resume();
 
-      // Sofia начинает первой
-      ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
+      const source = audioCtx.createMediaStreamSource(stream);
+      scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
 
-      btn.textContent = "📵"; btn.classList.add("end"); btn.disabled = false;
-      setStatus("Говорите…"); wave.classList.remove("hidden");
+      scriptProc.onaudioprocess = (ev) => {
+        if (ws?.readyState !== 1) return;
+        const input = ev.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++)
+          pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
+        const bytes = new Uint8Array(pcm16.buffer);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
+      };
+
+      source.connect(scriptProc);
+      scriptProc.connect(audioCtx.destination);
+
+      // Даём ScriptProcessor время начать отправку, потом просим Sofia заговорить
+      setTimeout(() => {
+        if (ws?.readyState === 1) {
+          ws.send(JSON.stringify({
+            type: "response.create",
+            response: { modalities: ["audio", "text"] }
+          }));
+        }
+      }, 500);
+
+      btn.textContent = "📵";
+      btn.classList.add("end");
+      btn.disabled = false;
+      setStatus("Говорите…");
+      wave.classList.remove("hidden");
       seconds = 0;
-      timerInterval = setInterval(() => { seconds++; timerEl.textContent = formatTime(seconds); }, 1000);
+      timerInterval = setInterval(() => {
+        seconds++;
+        timerEl.textContent = formatTime(seconds);
+      }, 1000);
 
     } else if (msg.type === "response.audio.delta" && msg.delta) {
       playPCM16(msg.delta, audioCtx);
@@ -182,15 +211,18 @@ async function startCall() {
       btn.classList.remove("ringing");
 
     } else if (msg.type === "error") {
-      setStatus("Ошибка: " + (msg.error?.message || JSON.stringify(msg.error)));
-      dbg('xai err');
+      setStatus("Ошибка: " + (msg.error?.message || msg.error || "unknown"));
     }
   };
 }
 
 btn.addEventListener("click", () => {
-  if (ws) { setStatus("Звонок завершён · " + formatTime(seconds)); cleanup(); }
-  else startCall();
+  if (ws) {
+    setStatus("Звонок завершён · " + formatTime(seconds));
+    cleanup();
+  } else {
+    startCall();
+  }
 });
 </script>
 </body>
