@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Sofía — Голосовой звонок</title>
-<!-- SRI omitted: Telegram updates this SDK frequently; static hash would break on SDK updates -->
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -27,7 +26,6 @@
   .subtitle { font-size: 13px; opacity: 0.55; }
   #timer { font-size: 22px; font-weight: 500; letter-spacing: 2px; min-height: 28px; }
   #status { font-size: 13px; opacity: 0.6; min-height: 18px; text-align: center; }
-
   .wave { display: flex; gap: 3px; align-items: center; height: 28px; }
   .bar { width: 4px; border-radius: 2px; background: #4CAF50; animation: wave 0.8s ease-in-out infinite; }
   .bar:nth-child(2) { animation-delay: 0.12s; }
@@ -36,7 +34,6 @@
   .bar:nth-child(5) { animation-delay: 0.48s; }
   @keyframes wave { 0%,100% { height: 6px; } 50% { height: 24px; } }
   .wave.hidden { visibility: hidden; }
-
   #callBtn {
     width: 80px; height: 80px; border-radius: 50%; border: none;
     background: #4CAF50; color: #fff; font-size: 32px;
@@ -54,17 +51,14 @@
 <div class="avatar">🌸</div>
 <h1>Sofía</h1>
 <p class="subtitle">Project Manager DonDonBerry</p>
-
 <div id="timer"></div>
 <div class="wave hidden" id="wave">
   <div class="bar"></div><div class="bar"></div>
   <div class="bar"></div><div class="bar"></div>
   <div class="bar"></div>
 </div>
-
 <button id="callBtn">📞</button>
 <div id="status">Нажми чтобы позвонить</div>
-
 <script>
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
@@ -80,7 +74,6 @@ let nextPlayTime = 0;
 let sentChunks = 0, gotDeltas = 0;
 let sofiaReplying = false;
 
-// Нижняя debug-строка
 const dbgEl = document.createElement("div");
 dbgEl.style.cssText = "position:fixed;bottom:4px;left:0;right:0;font-size:10px;opacity:0.6;text-align:center;padding:0 8px;word-break:break-all;";
 document.body.appendChild(dbgEl);
@@ -113,25 +106,22 @@ async function playPCM16(base64, ctx) {
     catch(e) { dbg("RESUME ERR: " + e.message); return; }
   }
   try {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const samples = new Int16Array(bytes.buffer);
-  const float32 = new Float32Array(samples.length);
-  for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
-
-  const buffer = ctx.createBuffer(1, float32.length, 24000);
-  buffer.getChannelData(0).set(float32);
-
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(ctx.destination);
-
-  const now = ctx.currentTime;
-  const startAt = Math.max(now, nextPlayTime);
-  source.start(startAt);
-  nextPlayTime = startAt + buffer.duration;
-  dbg("started at " + startAt.toFixed(2) + " dur=" + buffer.duration.toFixed(2));
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const samples = new Int16Array(bytes.buffer);
+    const float32 = new Float32Array(samples.length);
+    for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
+    const buffer = ctx.createBuffer(1, float32.length, 24000);
+    buffer.getChannelData(0).set(float32);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    const now = ctx.currentTime;
+    const startAt = Math.max(now, nextPlayTime);
+    source.start(startAt);
+    nextPlayTime = startAt + buffer.duration;
+    dbg("started at " + startAt.toFixed(2) + " dur=" + buffer.duration.toFixed(2));
   } catch(e) { dbg("PLAY ERR: " + e.message); }
 }
 
@@ -163,9 +153,7 @@ async function startCall() {
   };
 
   ws.onclose = () => {
-    if (timerInterval) {
-      setStatus("Звонок завершён · " + formatTime(seconds));
-    }
+    if (timerInterval) setStatus("Звонок завершён · " + formatTime(seconds));
     cleanup();
     btn.disabled = false;
   };
@@ -180,12 +168,12 @@ async function startCall() {
       const source = audioCtx.createMediaStreamSource(stream);
       scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
 
-      const VAD_SPEAK   = 0.015;
-      const VAD_SIL_MS  = 800;
-      const XAISRATE    = 24000;
-      const ratio       = audioCtx.sampleRate / XAISRATE;
+      const VAD_SPEAK  = 0.015;
+      const VAD_SIL_MS = 800;
+      const XAISRATE   = 24000;
+      const ratio      = audioCtx.sampleRate / XAISRATE;
       let vadSpeaking = false, vadSilenceStart = 0;
-      sofiaReplying = true; // ждём первый ответ Sofia
+      sofiaReplying = true;
 
       scriptProc.onaudioprocess = (ev) => {
         if (ws?.readyState !== 1) return;
@@ -207,7 +195,6 @@ async function startCall() {
         if (sentChunks % 15 === 0)
           dbg("rms:" + rms.toFixed(3) + " " + (vadSpeaking?"SPEAK":"sil") + (sofiaReplying?" sofia":""));
 
-        // Аудио + VAD — только когда Sofia не говорит
         if (sofiaReplying) return;
 
         if (rms > VAD_SPEAK) {
@@ -218,12 +205,11 @@ async function startCall() {
           if (Date.now() - vadSilenceStart > VAD_SIL_MS) {
             vadSpeaking = false; vadSilenceStart = 0; sofiaReplying = true;
             setStatus("Sofía думает…");
-            ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
+            // Сервер сам делает commit+response.create (клиентские xAI игнорирует)
+            ws.send(JSON.stringify({ type: "request.response" }));
           }
         }
 
-        // Пишем аудио в буфер xAI
         const pcm16 = new Int16Array(samples.length);
         for (let i = 0; i < samples.length; i++)
           pcm16[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
@@ -233,11 +219,7 @@ async function startCall() {
         ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
       };
 
-      // response.create шлёт сервер при session.updated — не дублируем здесь
-
-      // Небольшая пауза, потом запускаем микрофон
       await new Promise(r => setTimeout(r, 300));
-
       source.connect(scriptProc);
       scriptProc.connect(audioCtx.destination);
 
@@ -266,7 +248,6 @@ async function startCall() {
       dbg("response.created → waiting audio...");
 
     } else if (msg.type === "response.done") {
-      // Чистим буфер от аудио пока Sofia говорила
       if (ws?.readyState === 1)
         ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
       sofiaReplying = false;
@@ -293,9 +274,7 @@ btn.addEventListener("click", () => {
     return;
   }
 
-  // iOS: создаём AudioContext синхронно в gesture
   audioCtx = new AudioContext({ sampleRate: 24000 });
-
   const keepAliveGain = audioCtx.createGain();
   keepAliveGain.gain.value = 0.00001;
   const keepAliveOsc = audioCtx.createOscillator();
@@ -304,7 +283,6 @@ btn.addEventListener("click", () => {
   keepAliveOsc.start();
 
   dbg("ctx: " + audioCtx.state + " sr:" + audioCtx.sampleRate);
-
   startCall();
 });
 </script>

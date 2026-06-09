@@ -13,7 +13,6 @@ const PORT = process.env.PORT || 3000;
 
 const SOFIA_SYSTEM_PROMPT = `Ты — Sofía Navarro Fuentes, менеджер проектов DonDonBerry. Говоришь по-русски. Отвечай кратко — 1-2 предложения максимум. Это голосовой звонок. Помогаешь Ивану с DonDonBerry, Такнадо, автоматизацией. Не раскрываешь что ты ИИ.`;
 
-// Кольцевой буфер для /logs endpoint
 const LOG_BUFFER = [];
 function log(msg) {
   const line = new Date().toISOString().slice(11,19) + " " + msg;
@@ -62,7 +61,6 @@ wss.on("connection", (clientWs, req) => {
     }));
   });
 
-  // xAI → client
   xaiWs.on("message", (data) => {
     const str = data.toString();
     try {
@@ -100,6 +98,14 @@ wss.on("connection", (clientWs, req) => {
         clientChunks++;
         if (clientChunks === 1) log("first audio chunk from client");
         if (clientChunks % 50 === 0) log(`client chunks: ${clientChunks}, xAI deltas: ${xaiAudioDeltas}`);
+      } else if (msg.type === "request.response") {
+        // Клиент просит Sofia ответить — сервер сам шлёт commit+response.create (клиентские xAI игнорирует)
+        log("client request.response → server sending commit+response.create to xAI");
+        if (xaiWs.readyState === WebSocket.OPEN) {
+          xaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          xaiWs.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
+        }
+        return; // не форвардим кастомный тип к xAI
       } else {
         log("client → " + msg.type);
       }
