@@ -80,10 +80,10 @@ wss.on("connection", (clientWs, req) => {
         log("xAI → " + t + " | " + str.slice(0, 100));
       }
 
-      // Сигналим клиенту только когда xAI реально принял сессию
       if (!sessionReadySent && t === "session.updated") {
         sessionReadySent = true;
-        log("session ready → notifying client");
+        log("session ready → sending server-side response.create to xAI");
+        xaiWs.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
         if (clientWs.readyState === WebSocket.OPEN)
           clientWs.send(JSON.stringify({ type: "session.ready" }));
       }
