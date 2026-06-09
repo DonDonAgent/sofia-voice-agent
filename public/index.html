@@ -184,7 +184,6 @@ async function startCall() {
       const source = audioCtx.createMediaStreamSource(stream);
       scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
 
-      // Ручной VAD (turn_detection:none на сервере)
       const VAD_SPEAK   = 0.015;   // RMS порог речи
       const VAD_SIL_MS  = 800;     // ms тишины → конец фразы
       const XAISRATE    = 24000;
@@ -214,23 +213,23 @@ async function startCall() {
         if (sentChunks % 15 === 0)
           dbg("rms:" + rms.toFixed(3) + " " + (vadSpeaking?"SPEAK":"sil") + (sofiaReplying?" sofia":""));
 
-        // VAD: не слушаем пока Sofia отвечает
-        if (!sofiaReplying) {
-          if (rms > VAD_SPEAK) {
-            if (!vadSpeaking) { vadSpeaking = true; setStatus("Слушаю…"); }
-            vadSilenceStart = 0;
-          } else if (vadSpeaking) {
-            if (!vadSilenceStart) vadSilenceStart = Date.now();
-            if (Date.now() - vadSilenceStart > VAD_SIL_MS) {
-              vadSpeaking = false; vadSilenceStart = 0; sofiaReplying = true;
-              setStatus("Sofía думает…");
-              ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-              ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
-            }
+        // VAD + аудио — только когда Sofia не говорит
+        if (sofiaReplying) return;
+
+        if (rms > VAD_SPEAK) {
+          if (!vadSpeaking) { vadSpeaking = true; setStatus("Слушаю…"); }
+          vadSilenceStart = 0;
+        } else if (vadSpeaking) {
+          if (!vadSilenceStart) vadSilenceStart = Date.now();
+          if (Date.now() - vadSilenceStart > VAD_SIL_MS) {
+            vadSpeaking = false; vadSilenceStart = 0; sofiaReplying = true;
+            setStatus("Sofía думает…");
+            ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
           }
         }
 
-        // Всегда пишем аудио в буфер xAI
+        // Пишем аудио в буфер xAI только пока слушаем
         const pcm16 = new Int16Array(samples.length);
         for (let i = 0; i < samples.length; i++)
           pcm16[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
@@ -240,7 +239,7 @@ async function startCall() {
         ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
       };
 
-      // response.create ПЕРВЫМ — до аудио в буфере, иначе VAD конфликтует
+      // response.create для приветствия — до запуска микрофона
       ws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio', 'text'] } }));
 
       // Небольшая пауза, потом запускаем микрофон
@@ -274,17 +273,12 @@ async function startCall() {
       dbg("response.created → waiting audio...");
 
     } else if (msg.type === "response.done") {
+      // Чистим буфер от аудио накопленного пока Sofia говорила
+      if (ws?.readyState === 1)
+        ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
       sofiaReplying = false;
       setStatus("Говорите…");
-      dbg("response.done → next in 2s");
-      // Тест цикла: через 2с просим следующий ответ без commit
-      setTimeout(() => {
-        if (ws?.readyState === 1 && !sofiaReplying) {
-          sofiaReplying = true;
-          ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio","text"] } }));
-          dbg("auto response.create sent");
-        }
-      }, 2000);
+      dbg("response.done → слушаю вас");
 
     } else if (msg.type === "input_audio_buffer.speech_started") {
       dbg("VAD: speech detected!");

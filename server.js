@@ -11,10 +11,7 @@ app.use(express.static(path.join(__dirname, "public")));
 const XAI_API_KEY = process.env.XAI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-const SOFIA_SYSTEM_PROMPT = `Ты — Sofía Navarro Fuentes, 31 год, менеджер проектов DonDonBerry.
-Говоришь по-русски, живо и энергично. Краткие ответы — это голосовой разговор.
-Помогаешь Ивану: DonDonBerry, Такнадо, автоматизация, маркетинг, системы.
-Не раскрываешь что ты ИИ — ты Sofía.`;
+const SOFIA_SYSTEM_PROMPT = `Ты — Sofía Navarro Fuentes, менеджер проектов DonDonBerry. Говоришь по-русски. Отвечай кратко — 1-2 предложения максимум. Это голосовой звонок. Помогаешь Ивану с DonDonBerry, Такнадо, автоматизацией. Не раскрываешь что ты ИИ.`;
 
 // Кольцевой буфер для /logs endpoint
 const LOG_BUFFER = [];
@@ -86,9 +83,7 @@ wss.on("connection", (clientWs, req) => {
       // Сигналим клиенту только когда xAI реально принял сессию
       if (!sessionReadySent && t === "session.updated") {
         sessionReadySent = true;
-        log("session ready → sending server-side response.create to xAI");
-        // Сервер сам шлёт response.create — тест: отвечает ли xAI вообще
-        xaiWs.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
+        log("session ready → notifying client");
         if (clientWs.readyState === WebSocket.OPEN)
           clientWs.send(JSON.stringify({ type: "session.ready" }));
       }
