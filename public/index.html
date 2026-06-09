@@ -26,6 +26,7 @@
   .subtitle { font-size: 13px; opacity: 0.55; }
   #timer { font-size: 22px; font-weight: 500; letter-spacing: 2px; min-height: 28px; }
   #status { font-size: 13px; opacity: 0.6; min-height: 18px; text-align: center; }
+
   .wave { display: flex; gap: 3px; align-items: center; height: 28px; }
   .bar { width: 4px; border-radius: 2px; background: #4CAF50; animation: wave 0.8s ease-in-out infinite; }
   .bar:nth-child(2) { animation-delay: 0.12s; }
@@ -34,6 +35,7 @@
   .bar:nth-child(5) { animation-delay: 0.48s; }
   @keyframes wave { 0%,100% { height: 6px; } 50% { height: 24px; } }
   .wave.hidden { visibility: hidden; }
+
   #callBtn {
     width: 80px; height: 80px; border-radius: 50%; border: none;
     background: #4CAF50; color: #fff; font-size: 32px;
@@ -51,14 +53,17 @@
 <div class="avatar">🌸</div>
 <h1>Sofía</h1>
 <p class="subtitle">Project Manager DonDonBerry</p>
+
 <div id="timer"></div>
 <div class="wave hidden" id="wave">
   <div class="bar"></div><div class="bar"></div>
   <div class="bar"></div><div class="bar"></div>
   <div class="bar"></div>
 </div>
+
 <button id="callBtn">📞</button>
 <div id="status">Нажми чтобы позвонить</div>
+
 <script>
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
@@ -83,7 +88,7 @@ function dbg(text) { dbgEl.textContent = text; }
 
 function formatTime(s) {
   const m = Math.floor(s / 60);
-  return String(m).padStart(2,"0") + ":" + String(s % 60).padStart(2,"00");
+  return String(m).padStart(2,"0") + ":" + String(s % 60).padStart(2,"0");
 }
 
 function cleanup() {
@@ -100,10 +105,8 @@ function cleanup() {
 }
 
 async function playPCM16(base64, ctx) {
-  dbg("play#" + gotDeltas + " ctx=" + ctx.state + " len=" + base64.length);
   if (ctx.state !== "running") {
-    try { await ctx.resume(); dbg("resumed→" + ctx.state); }
-    catch(e) { dbg("RESUME ERR: " + e.message); return; }
+    try { await ctx.resume(); } catch(e) { dbg("RESUME ERR: " + e.message); return; }
   }
   try {
     const binary = atob(base64);
@@ -112,17 +115,33 @@ async function playPCM16(base64, ctx) {
     const samples = new Int16Array(bytes.buffer);
     const float32 = new Float32Array(samples.length);
     for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
+
     const buffer = ctx.createBuffer(1, float32.length, 24000);
     buffer.getChannelData(0).set(float32);
+
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
+
     const now = ctx.currentTime;
     const startAt = Math.max(now, nextPlayTime);
     source.start(startAt);
     nextPlayTime = startAt + buffer.duration;
-    dbg("started at " + startAt.toFixed(2) + " dur=" + buffer.duration.toFixed(2));
   } catch(e) { dbg("PLAY ERR: " + e.message); }
+}
+
+function toPCM16Base64(floatChunks) {
+  const totalLen = floatChunks.reduce((s, c) => s + c.length, 0);
+  const pcm16 = new Int16Array(totalLen);
+  let offset = 0;
+  for (const chunk of floatChunks) {
+    for (let i = 0; i < chunk.length; i++)
+      pcm16[offset++] = Math.max(-32768, Math.min(32767, chunk[i] * 32768));
+  }
+  const bytes = new Uint8Array(pcm16.buffer);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
 
 async function startCall() {
@@ -170,16 +189,21 @@ async function startCall() {
 
       const VAD_SPEAK  = 0.015;
       const VAD_SIL_MS = 800;
+      const MAX_CAPTURE_MS = 30000;
       const XAISRATE   = 24000;
       const ratio      = audioCtx.sampleRate / XAISRATE;
-      let vadSpeaking = false, vadSilenceStart = 0;
+
+      let isCapturing = false;
+      let vadSilenceStart = 0;
+      let audioChunks = [];
+      let captureStart = 0;
       sofiaReplying = true;
 
       scriptProc.onaudioprocess = (ev) => {
-        if (ws?.readyState !== 1) return;
+        if (sofiaReplying || ws?.readyState !== 1) return;
         sentChunks++;
-        const input = ev.inputBuffer.getChannelData(0);
 
+        const input = ev.inputBuffer.getChannelData(0);
         let samples = input;
         if (ratio !== 1) {
           const outLen = Math.round(input.length / ratio);
@@ -192,31 +216,32 @@ async function startCall() {
         let sum = 0;
         for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
         const rms = Math.sqrt(sum / samples.length);
-        if (sentChunks % 15 === 0)
-          dbg("rms:" + rms.toFixed(3) + " " + (vadSpeaking?"SPEAK":"sil") + (sofiaReplying?" sofia":""));
 
-        if (sofiaReplying) return;
+        if (sentChunks % 10 === 0)
+          dbg("rms:" + rms.toFixed(3) + (isCapturing ? " REC" : " idle") + " sr:" + audioCtx.sampleRate);
 
         if (rms > VAD_SPEAK) {
-          if (!vadSpeaking) { vadSpeaking = true; setStatus("Слушаю…"); }
+          if (!isCapturing) { isCapturing = true; captureStart = Date.now(); setStatus("Слушаю…"); }
           vadSilenceStart = 0;
-        } else if (vadSpeaking) {
+          audioChunks.push(new Float32Array(samples));
+        } else if (isCapturing) {
+          audioChunks.push(new Float32Array(samples));
           if (!vadSilenceStart) vadSilenceStart = Date.now();
-          if (Date.now() - vadSilenceStart > VAD_SIL_MS) {
-            vadSpeaking = false; vadSilenceStart = 0; sofiaReplying = true;
+          const silenced = Date.now() - vadSilenceStart > VAD_SIL_MS;
+          const tooLong  = Date.now() - captureStart > MAX_CAPTURE_MS;
+          if (silenced || tooLong) {
+            isCapturing = false;
+            vadSilenceStart = 0;
+            sofiaReplying = true;
             setStatus("Sofía думает…");
-            // Сервер сам делает commit+response.create (клиентские xAI игнорирует)
-            ws.send(JSON.stringify({ type: "request.response" }));
+            const chunks = audioChunks;
+            audioChunks = [];
+            const totalSamples = chunks.reduce((s, c) => s + c.length, 0);
+            dbg("sending " + (totalSamples / XAISRATE).toFixed(1) + "s audio...");
+            const audioB64 = toPCM16Base64(chunks);
+            ws.send(JSON.stringify({ type: "audio.ready", audio: audioB64 }));
           }
         }
-
-        const pcm16 = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i++)
-          pcm16[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
-        const bytes = new Uint8Array(pcm16.buffer);
-        let bin = "";
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
       };
 
       await new Promise(r => setTimeout(r, 300));
@@ -226,42 +251,28 @@ async function startCall() {
       btn.textContent = "📵";
       btn.classList.add("end");
       btn.disabled = false;
-      setStatus("sr:" + audioCtx.sampleRate + " | Говорите…");
-      dbg("ready. ctx=" + audioCtx.state);
+      setStatus("Говорите…");
+      dbg("ready. ctx=" + audioCtx.state + " sr:" + audioCtx.sampleRate);
       wave.classList.remove("hidden");
       seconds = 0;
-      timerInterval = setInterval(() => {
-        seconds++;
-        timerEl.textContent = formatTime(seconds);
-      }, 1000);
+      timerInterval = setInterval(() => { seconds++; timerEl.textContent = formatTime(seconds); }, 1000);
 
     } else if (msg.type === "response.output_audio.delta" && msg.delta) {
       gotDeltas++;
-      dbg("AUDIO DELTA #" + gotDeltas + " ctx=" + (audioCtx?.state));
+      dbg("AUDIO #" + gotDeltas + " ctx=" + (audioCtx?.state));
       playPCM16(msg.delta, audioCtx);
       btn.classList.add("ringing");
 
     } else if (msg.type === "response.output_audio.done") {
       btn.classList.remove("ringing");
 
-    } else if (msg.type === "response.created") {
-      dbg("response.created → waiting audio...");
-
     } else if (msg.type === "response.done") {
-      if (ws?.readyState === 1)
-        ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
       sofiaReplying = false;
       setStatus("Говорите…");
-      dbg("response.done → слушаю вас");
-
-    } else if (msg.type === "input_audio_buffer.speech_started") {
-      dbg("VAD: speech detected!");
-
-    } else if (msg.type === "input_audio_buffer.speech_stopped") {
-      dbg("VAD: speech stopped, generating...");
+      dbg("response.done → слушаю");
 
     } else if (msg.type === "error") {
-      dbg("ERROR: " + JSON.stringify(msg.error || msg));
+      dbg("ERR: " + JSON.stringify(msg.error || msg));
       setStatus("Ошибка: " + (msg.error?.message || msg.error || "unknown"));
     }
   };

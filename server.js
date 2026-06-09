@@ -34,7 +34,7 @@ function log(msg) {
 }
 
 async function callKB(functionName, args) {
-  if (!KB_URL) return `KB not configured.`;
+  if (!KB_URL) return `KB not configured. Function: ${functionName}`;
   try {
     const resp = await fetch(`${KB_URL}/query`, {
       method: "POST",
@@ -74,7 +74,7 @@ wss.on("connection", (clientWs, req) => {
   );
 
   let sessionReadySent = false;
-  let clientChunks = 0, xaiAudioDeltas = 0;
+  let xaiAudioDeltas = 0, audioReadyCount = 0;
 
   xaiWs.on("open", () => {
     log("xAI connected, sending session.update");
@@ -109,24 +109,19 @@ wss.on("connection", (clientWs, req) => {
     } else if (t === "error") {
       log("xAI ERROR: " + str);
     } else if (t === "conversation.item.input_audio_transcription.completed") {
-      log(`TRANSCRIPT: "${msg.transcript}"`);
+      log(`TRANSCRIPT: \"${msg.transcript}\"`);
     } else if (t === "response.output_audio_transcript.done") {
-      log(`SOFIA SAID: "${msg.transcript}"`);
+      log(`SOFIA SAID: \"${msg.transcript}\"`);
     } else if (t === "response.function_call_arguments.done") {
       const fnName = msg.name;
       const callId = msg.call_id;
       let args = {};
       try { args = JSON.parse(msg.arguments || "{}"); } catch {}
       log(`tool call: ${fnName}(${JSON.stringify(args)})`);
-
       const result = await callKB(fnName, args);
       log(`tool result: ${result.slice(0, 120)}`);
-
       if (xaiWs.readyState === WebSocket.OPEN) {
-        xaiWs.send(JSON.stringify({
-          type: "conversation.item.create",
-          item: { type: "function_call_output", call_id: callId, output: result }
-        }));
+        xaiWs.send(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: result } }));
         xaiWs.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
       }
     } else {
@@ -135,7 +130,7 @@ wss.on("connection", (clientWs, req) => {
 
     if (!sessionReadySent && t === "session.updated") {
       sessionReadySent = true;
-      log("session ready → response.create");
+      log("session ready → response.create (greeting)");
       xaiWs.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
       if (clientWs.readyState === WebSocket.OPEN)
         clientWs.send(JSON.stringify({ type: "session.ready" }));
@@ -147,14 +142,21 @@ wss.on("connection", (clientWs, req) => {
   clientWs.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.type === "input_audio_buffer.append") {
-        clientChunks++;
-        if (clientChunks === 1) log("first audio chunk from client");
-        if (clientChunks % 50 === 0) log(`client chunks: ${clientChunks}, xAI deltas: ${xaiAudioDeltas}`);
-      } else if (msg.type === "request.response") {
-        log("client request.response");
-        if (xaiWs.readyState === WebSocket.OPEN) {
-          xaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+
+      if (msg.type === "audio.ready") {
+        audioReadyCount++;
+        const audioB64 = msg.audio;
+        const kbLen = audioB64 ? Math.round(audioB64.length / 1024) : 0;
+        log(`audio.ready #${audioReadyCount} ${kbLen}KB → conversation.item.create`);
+        if (xaiWs.readyState === WebSocket.OPEN && audioB64) {
+          xaiWs.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_audio", audio: audioB64 }]
+            }
+          }));
           xaiWs.send(JSON.stringify({ type: "response.create", response: { modalities: ["audio", "text"] } }));
         }
         return;
@@ -177,7 +179,7 @@ wss.on("connection", (clientWs, req) => {
   });
 
   clientWs.on("close", () => {
-    log(`Client disconnected. chunks=${clientChunks} deltas=${xaiAudioDeltas}`);
+    log(`Client disconnected. audio.ready=${audioReadyCount} xaiDeltas=${xaiAudioDeltas}`);
     if (xaiWs.readyState === WebSocket.OPEN) xaiWs.close();
   });
 });
